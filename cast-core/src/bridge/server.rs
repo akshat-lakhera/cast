@@ -155,7 +155,10 @@ impl BridgeServer {
                             }
                         });
 
+                        let client_peer_id = Arc::new(tokio::sync::Mutex::new(None::<String>));
+
                         // Task: Handle incoming messages from this client
+                        let client_peer_id_clone = client_peer_id.clone();
                         while let Some(msg) = ws_receiver.next().await {
                             match msg {
                                 Ok(Message::Text(text)) => {
@@ -170,6 +173,7 @@ impl BridgeServer {
                                                 &config,
                                                 &peers,
                                                 &tx,
+                                                &client_peer_id_clone,
                                             )
                                             .await;
                                         }
@@ -188,6 +192,14 @@ impl BridgeServer {
                         }
 
                         send_task.abort();
+                        if let Some(id) = client_peer_id.lock().await.take() {
+                            let mut peers_lock = peers.lock().await;
+                            if peers_lock.remove(&id).is_some() {
+                                info!("Cleaned up disconnected peer: {}", id);
+                                let lost_msg = BridgeMessage::DeviceLost { id };
+                                let _ = tx.send(serde_json::to_string(&lost_msg).unwrap_or_default());
+                            }
+                        }
                         info!("WebSocket client disconnected: {}", peer);
                     });
                 }
@@ -207,6 +219,7 @@ impl BridgeServer {
         _config: &Arc<Mutex<CastConfig>>,
         peers: &Arc<Mutex<HashMap<String, DiscoveredDevice>>>,
         tx: &broadcast::Sender<String>,
+        client_peer_id: &Arc<Mutex<Option<String>>>,
     ) {
         match msg {
             ClientMessage::RegisterPeer {
@@ -216,7 +229,15 @@ impl BridgeServer {
                 transport,
                 ip: _,
             } => {
+                // Do not register the local PC host as a remote peer
+                if name.contains("Windows PC (Host)") {
+                    info!("Skipping local host registration as peer device: {}", id);
+                    return;
+                }
+
                 info!("Registering real peer device: id={} name={} ({})", id, name, device_type);
+                *client_peer_id.lock().await = Some(id.clone());
+
                 let dtype = match device_type.as_str() {
                     "phone" => DeviceType::Phone,
                     "tablet" => DeviceType::Tablet,
@@ -271,14 +292,16 @@ impl BridgeServer {
                 };
                 drop(router_lock);
 
-                // Also append all registered peer devices
-                let peers_lock = peers.lock().await;
-                for (_, peer_dev) in peers_lock.iter() {
-                    if !devices.iter().any(|d| d.id == peer_dev.id) {
-                        devices.push(peer_dev.clone());
+                // Only append active registered remote peers if scanning 'all'
+                if transport == "all" {
+                    let peers_lock = peers.lock().await;
+                    for (_, peer_dev) in peers_lock.iter() {
+                        if !devices.iter().any(|d| d.id == peer_dev.id) {
+                            devices.push(peer_dev.clone());
+                        }
                     }
+                    drop(peers_lock);
                 }
-                drop(peers_lock);
 
                 for device in devices {
                     let msg = BridgeMessage::DeviceDiscovered {

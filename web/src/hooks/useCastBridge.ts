@@ -65,16 +65,18 @@ export function useCastBridge() {
           sessionMessage: 'Connected to CAST daemon.',
         }))
 
-        // Auto-register this device identity with the bridge
-        const regMsg: ClientMessage = {
-          type: 'register_peer',
-          id: local.id,
-          name: local.name,
-          device_type: local.device_type,
-          transport: 'usb',
-          ip: typeof window !== 'undefined' ? window.location.hostname : undefined,
+        // Only register remote/mobile peers with the bridge (PC host should not register itself as a peer)
+        if (local.is_mobile) {
+          const regMsg: ClientMessage = {
+            type: 'register_peer',
+            id: local.id,
+            name: local.name,
+            device_type: local.device_type,
+            transport: 'usb',
+            ip: typeof window !== 'undefined' ? window.location.hostname : undefined,
+          }
+          ws.send(JSON.stringify(regMsg))
         }
-        ws.send(JSON.stringify(regMsg))
 
         // Trigger real device scan immediately
         ws.send(JSON.stringify({ type: 'scan', transport: 'all' }))

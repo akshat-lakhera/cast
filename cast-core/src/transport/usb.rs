@@ -52,40 +52,58 @@ impl UsbTransport {
                                 item.get("LinkSpeed").and_then(|s| s.as_str()),
                             ) {
                                 let desc_lower = desc.to_lowercase();
-                                let is_usb = desc_lower.contains("ndis")
-                                    || desc_lower.contains("apple mobile")
-                                    || desc_lower.contains("usb")
-                                    || desc_lower.contains("ethernet");
+                                let name_lower = name.to_lowercase();
 
-                                if is_usb {
-                                    let speed_num = speed
-                                        .split_whitespace()
-                                        .next()
-                                        .and_then(|n| n.parse::<u32>().ok())
-                                        .unwrap_or(480);
+                                // Exclude all virtual machine, software loopback, and hypervisor adapters
+                                let is_virtual = desc_lower.contains("virtual")
+                                    || desc_lower.contains("vmware")
+                                    || desc_lower.contains("hyper-v")
+                                    || desc_lower.contains("loopback")
+                                    || desc_lower.contains("pseudo")
+                                    || desc_lower.contains("wsl")
+                                    || desc_lower.contains("tap")
+                                    || name_lower.contains("virtual");
 
-                                    let device_name = if desc_lower.contains("apple") {
-                                        "Apple iPhone / iPad (USB Tethered)"
-                                    } else if desc_lower.contains("ndis") {
-                                        "Android Mobile (USB Tethered)"
-                                    } else {
-                                        desc
-                                    };
-
-                                    devices.push(DiscoveredDevice {
-                                        id: format!("USB:{}", name),
-                                        name: device_name.to_string(),
-                                        device_type: if desc_lower.contains("apple") || desc_lower.contains("ndis") {
-                                            DeviceType::Phone
-                                        } else {
-                                            DeviceType::Desktop
-                                        },
-                                        transport: TransportKind::Usb,
-                                        rssi_dbm: None,
-                                        usb_speed_mbps: Some(speed_num),
-                                        connected: true,
-                                    });
+                                if is_virtual {
+                                    continue;
                                 }
+
+                                // Only match real mobile USB tethering or real physical USB network adapters
+                                let is_tethering = desc_lower.contains("ndis")
+                                    || desc_lower.contains("apple mobile")
+                                    || (desc_lower.contains("usb") && !desc_lower.contains("wireless") && !desc_lower.contains("wi-fi"));
+
+                                if !is_tethering {
+                                    continue;
+                                }
+
+                                let speed_num = speed
+                                    .split_whitespace()
+                                    .next()
+                                    .and_then(|n| n.parse::<u32>().ok())
+                                    .unwrap_or(480);
+
+                                let device_name = if desc_lower.contains("apple") {
+                                    "Apple iPhone / iPad (USB Tethered)"
+                                } else if desc_lower.contains("ndis") {
+                                    "Android Mobile (USB Tethered)"
+                                } else {
+                                    desc
+                                };
+
+                                devices.push(DiscoveredDevice {
+                                    id: format!("USB:{}", name),
+                                    name: device_name.to_string(),
+                                    device_type: if desc_lower.contains("apple") || desc_lower.contains("ndis") {
+                                        DeviceType::Phone
+                                    } else {
+                                        DeviceType::Desktop
+                                    },
+                                    transport: TransportKind::Usb,
+                                    rssi_dbm: None,
+                                    usb_speed_mbps: Some(speed_num),
+                                    connected: true,
+                                });
                             }
                         }
                     }

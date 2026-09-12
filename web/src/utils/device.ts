@@ -9,12 +9,13 @@ export interface LocalDeviceInfo {
 }
 
 export function detectLocalDevice(): LocalDeviceInfo {
-  // Generate or retrieve persistent peer ID
+  // Generate or retrieve persistent peer ID (localStorage prevents duplicate IDs on refresh)
   let id = ''
   try {
-    id = sessionStorage.getItem('cast_peer_id') || ''
+    id = localStorage.getItem('cast_peer_id') || sessionStorage.getItem('cast_peer_id') || ''
     if (!id) {
       id = `peer-${Math.random().toString(36).substring(2, 9)}`
+      localStorage.setItem('cast_peer_id', id)
       sessionStorage.setItem('cast_peer_id', id)
     }
   } catch {
@@ -24,9 +25,10 @@ export function detectLocalDevice(): LocalDeviceInfo {
   // Generate or retrieve unique dynamic 6-digit security PIN for this specific device
   let pin = ''
   try {
-    pin = sessionStorage.getItem('cast_device_pin') || ''
+    pin = localStorage.getItem('cast_device_pin') || sessionStorage.getItem('cast_device_pin') || ''
     if (!pin || pin.length !== 6) {
       pin = Math.floor(100000 + Math.random() * 900000).toString()
+      localStorage.setItem('cast_device_pin', pin)
       sessionStorage.setItem('cast_device_pin', pin)
     }
   } catch {
