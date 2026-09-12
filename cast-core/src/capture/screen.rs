@@ -94,8 +94,12 @@ impl ScreenCapture {
             .unwrap_or_default()
             .as_micros() as u64;
 
-        // Generate a synthetic frame for development
-        // Production: Replace with DXGI Desktop Duplication or WGC capture
+        // Capture real Windows desktop screen in production
+        #[cfg(windows)]
+        let img = capture_windows_desktop(width, height)
+            .unwrap_or_else(|| self.generate_synthetic_frame(frame_id, width, height));
+
+        #[cfg(not(windows))]
         let img = self.generate_synthetic_frame(frame_id, width, height);
 
         // Determine if this is a keyframe (every 30 frames or first frame)
@@ -201,3 +205,106 @@ impl ScreenCapture {
         self.is_capturing.load(Ordering::SeqCst)
     }
 }
+
+/// Capture the real physical Windows desktop screen using Win32 GDI
+#[cfg(windows)]
+fn capture_windows_desktop(target_w: u32, target_h: u32) -> Option<RgbaImage> {
+    use windows_sys::Win32::Graphics::Gdi::{
+        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
+        GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+        SRCCOPY,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+
+    unsafe {
+        let screen_w = GetSystemMetrics(SM_CXSCREEN);
+        let screen_h = GetSystemMetrics(SM_CYSCREEN);
+        if screen_w <= 0 || screen_h <= 0 {
+            return None;
+        }
+
+        let hdc_screen = GetDC(std::ptr::null_mut());
+        if hdc_screen.is_null() {
+            return None;
+        }
+
+        let hdc_mem = CreateCompatibleDC(hdc_screen);
+        if hdc_mem.is_null() {
+            ReleaseDC(std::ptr::null_mut(), hdc_screen);
+            return None;
+        }
+
+        let hbm = CreateCompatibleBitmap(hdc_screen, screen_w, screen_h);
+        if hbm.is_null() {
+            DeleteDC(hdc_mem);
+            ReleaseDC(std::ptr::null_mut(), hdc_screen);
+            return None;
+        }
+
+        let old_bm = SelectObject(hdc_mem, hbm);
+
+        // Blit full physical screen to memory DC
+        let ok = BitBlt(hdc_mem, 0, 0, screen_w, screen_h, hdc_screen, 0, 0, SRCCOPY);
+        if ok == 0 {
+            SelectObject(hdc_mem, old_bm);
+            DeleteObject(hbm);
+            DeleteDC(hdc_mem);
+            ReleaseDC(std::ptr::null_mut(), hdc_screen);
+            return None;
+        }
+
+        let mut bmi: BITMAPINFO = std::mem::zeroed();
+        bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+        bmi.bmiHeader.biWidth = screen_w;
+        bmi.bmiHeader.biHeight = -screen_h; // Top-down DIB
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB as u32;
+
+        let buf_size = (screen_w * screen_h * 4) as usize;
+        let mut bgra_buf = vec![0u8; buf_size];
+
+        let lines = GetDIBits(
+            hdc_mem,
+            hbm,
+            0,
+            screen_h as u32,
+            bgra_buf.as_mut_ptr() as *mut _,
+            &mut bmi,
+            DIB_RGB_COLORS,
+        );
+
+        SelectObject(hdc_mem, old_bm);
+        DeleteObject(hbm);
+        DeleteDC(hdc_mem);
+        ReleaseDC(std::ptr::null_mut(), hdc_screen);
+
+        if lines == 0 {
+            return None;
+        }
+
+        // Fast BGRA -> RGBA conversion
+        for chunk in bgra_buf.chunks_exact_mut(4) {
+            let b = chunk[0];
+            let r = chunk[2];
+            chunk[0] = r;
+            chunk[2] = b;
+            chunk[3] = 255;
+        }
+
+        let full_img = RgbaImage::from_raw(screen_w as u32, screen_h as u32, bgra_buf)?;
+
+        if screen_w as u32 != target_w || screen_h as u32 != target_h {
+            let resized = image::imageops::resize(
+                &full_img,
+                target_w,
+                target_h,
+                image::imageops::FilterType::Nearest,
+            );
+            Some(resized)
+        } else {
+            Some(full_img)
+        }
+    }
+}
+

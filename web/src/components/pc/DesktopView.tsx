@@ -120,32 +120,55 @@ export function DesktopView({
 
       {/* Main Desktop Container */}
       <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-4 sm:py-6 flex flex-col gap-6">
-        {/* Real-Time Discovery Notice when no remote device connected yet */}
-        {activeDevices.length === 0 && (
-          <div className="p-3.5 sm:p-4 rounded-2xl bg-[#0d1118] border border-cyan-500/30 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs shadow-lg">
-            <div className="flex items-center gap-3">
-              <span className="relative flex h-3 w-3 shrink-0">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-3 w-3 bg-cyan-500"></span>
-              </span>
-              <div>
-                <span className="text-white font-medium">Real-Time Discovery Active: </span>
-                <span className="text-slate-400 font-mono">
-                  Connect USB Cable (USB Tethering) or pair Bluetooth device to connect 100% offline.
+        {/* ─── PROMINENT DEVICE CONNECTION STATUS BANNER (ShareMe Style) ─── */}
+        <div
+          className={`p-4 rounded-3xl border transition-all flex flex-col sm:flex-row items-center justify-between gap-3 shadow-xl ${
+            currentDevice
+              ? 'bg-emerald-950/60 border-emerald-500/40 shadow-emerald-950/40'
+              : 'bg-[#0d1118] border-cyan-500/30'
+          }`}
+        >
+          <div className="flex items-center gap-3.5">
+            <span className="relative flex h-3.5 w-3.5 shrink-0">
+              {currentDevice ? (
+                <>
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-3.5 w-3.5 bg-emerald-500" />
+                </>
+              ) : (
+                <>
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-3.5 w-3.5 bg-cyan-500" />
+                </>
+              )}
+            </span>
+            <div>
+              <div className="text-xs font-bold text-white flex items-center gap-2">
+                <span>{currentDevice ? 'DEVICE LINK ACTIVE:' : 'READY FOR OFFLINE PAIRING:'}</span>
+                <span className={currentDevice ? 'text-emerald-300 font-mono text-sm' : 'text-cyan-300 font-mono'}>
+                  {currentDevice ? currentDevice.name : 'Waiting for Phone / Peer...'}
                 </span>
               </div>
+              <div className="text-[11px] text-slate-400 font-mono mt-0.5">
+                {currentDevice
+                  ? `Transport: ${transport.toUpperCase()} Direct • Real Windows Desktop Stream • Zero-Lag 60 FPS`
+                  : 'Plug in USB Cable (turn on USB Tethering) or pair Bluetooth (100% Offline)'}
+              </div>
             </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="px-3 py-1.5 rounded-xl bg-black/60 border border-white/10 text-xs font-mono text-cyan-300">
+              PC PIN: <strong className="text-white tracking-wider">{bridgePin || localDevicePin}</strong>
+            </span>
             <button
-              onClick={() => {
-                navigator.clipboard.writeText('http://10.169.219.4:5174')
-                onToast('Offline URL copied to clipboard!')
-              }}
-              className="px-3.5 py-1.5 rounded-xl bg-cyan-950/80 text-cyan-300 border border-cyan-500/40 hover:bg-cyan-900/80 transition-all font-mono text-[11px] shrink-0 active:scale-98 cursor-pointer"
+              onClick={() => onOpenPairing('show_qr')}
+              className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-mono border border-white/10 active:scale-95 transition-all cursor-pointer"
             >
-              Copy Offline URL
+              Show QR Code
             </button>
           </div>
-        )}
+        </div>
 
         {/* ─── STATE A: ACTIVE LIVE STREAM THEATER ARENA ─────────────── */}
         {isStreamActive ? (
