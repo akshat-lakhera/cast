@@ -335,6 +335,10 @@ pub enum BridgeMessage {
         files_deleted: usize,
     },
 
+    /// Active peers list
+    #[serde(rename = "peer_list")]
+    PeerList { peers: Vec<crate::transport::DiscoveredDevice> },
+
     /// Error
     #[serde(rename = "error")]
     Error { message: String },
@@ -344,6 +348,16 @@ pub enum BridgeMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ClientMessage {
+    /// Register this client device with the bridge
+    #[serde(rename = "register_peer")]
+    RegisterPeer {
+        id: String,
+        name: String,
+        device_type: String,
+        transport: String,
+        ip: Option<String>,
+    },
+
     /// Start scanning for devices
     #[serde(rename = "scan")]
     Scan { transport: String },

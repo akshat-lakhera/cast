@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import type { BridgeMessage, ClientMessage, DiscoveredDevice, TelemetryStats, SessionState, VideoFrame, AudioChunk } from '../types'
+import { detectLocalDevice } from '../utils/device'
 
 function getWsUrl(): string {
   if (typeof window !== 'undefined' && window.location) {
@@ -55,6 +56,21 @@ export function useCastBridge() {
           error: null,
           sessionMessage: 'Connected to CAST daemon.',
         }))
+
+        // Auto-register this device identity with the bridge
+        const local = detectLocalDevice()
+        const regMsg: ClientMessage = {
+          type: 'register_peer',
+          id: local.id,
+          name: local.name,
+          device_type: local.device_type,
+          transport: 'usb',
+          ip: typeof window !== 'undefined' ? window.location.hostname : undefined,
+        }
+        ws.send(JSON.stringify(regMsg))
+
+        // Trigger real device scan immediately
+        ws.send(JSON.stringify({ type: 'scan', transport: 'all' }))
       }
 
       ws.onclose = () => {

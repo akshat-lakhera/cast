@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Monitor,
@@ -20,6 +20,7 @@ import { AudioVisualizer } from './components/AudioVisualizer'
 import { TelemetryPanel } from './components/TelemetryPanel'
 import { ControlsBar } from './components/ControlsBar'
 import { PairingModal } from './components/PairingModal'
+import { detectLocalDevice } from './utils/device'
 import type { DiscoveredDevice, CastDirection, TransportMode } from './types'
 
 export function App() {
@@ -59,44 +60,21 @@ export function App() {
     setTimeout(() => setNotification(null), 3000)
   }, [])
 
-  // Mock / default offline devices if bridge has not scanned yet
-  const fallbackDevices: DiscoveredDevice[] = [
-    {
-      id: 'usb-pixel-7',
-      name: 'Google Pixel 7 Pro',
-      device_type: 'phone',
-      transport: 'usb',
-      usb_speed_mbps: 480,
-      connected: true,
-    },
-    {
-      id: 'bt-s23-ultra',
-      name: 'Samsung Galaxy S23',
-      device_type: 'phone',
-      transport: 'bluetooth',
-      rssi_dbm: -58,
-      connected: false,
-    },
-    {
-      id: 'bt-thinkpad-x1',
-      name: 'ThinkPad X1 Yoga',
-      device_type: 'laptop',
-      transport: 'bluetooth',
-      rssi_dbm: -72,
-      connected: false,
-    },
-    {
-      id: 'usb-ipad-pro',
-      name: 'iPad Pro M2',
-      device_type: 'tablet',
-      transport: 'usb',
-      usb_speed_mbps: 1000,
-      connected: false,
-    },
-  ]
+  // Detect local device identity (this PC or this Phone)
+  const localDevice = detectLocalDevice()
 
-  const activeDevices = bridgeDevices.length > 0 ? bridgeDevices : fallbackDevices
-  const currentDevice = selectedDevice || activeDevices[0]
+  // Real discovered remote devices (excluding self)
+  const activeDevices = bridgeDevices.filter(d => d.id !== localDevice.id)
+
+  // Automatically select the remote target device as soon as it appears (zero manual picking needed!)
+  useEffect(() => {
+    if (activeDevices.length > 0 && (!selectedDevice || !activeDevices.some(d => d.id === selectedDevice.id))) {
+      setSelectedDevice(activeDevices[0])
+      showToast(`Auto-detected & selected: ${activeDevices[0].name}`)
+    }
+  }, [activeDevices, selectedDevice, showToast])
+
+  const currentDevice = selectedDevice || (activeDevices.length > 0 ? activeDevices[0] : null)
 
   // Handlers
   const handleStartCast = () => {
@@ -189,25 +167,54 @@ export function App() {
             </button>
           </div>
 
-          {/* Quick Info Badge */}
-          <div className="flex items-center gap-3 px-3 py-1.5 rounded-xl bg-black/40 border border-white/5 text-xs">
-            <div className="flex items-center gap-1.5 text-slate-400">
-              <span>Target:</span>
-              <span className="font-semibold text-white">{currentDevice?.name}</span>
+            {/* Quick Info Badge */}
+            <div className="flex items-center gap-3 px-3 py-1.5 rounded-xl bg-black/40 border border-white/5 text-xs">
+              <div className="flex items-center gap-1.5 text-slate-400">
+                <span>Target:</span>
+                <span className="font-semibold text-white">
+                  {currentDevice ? currentDevice.name : 'Searching for device...'}
+                </span>
+              </div>
+              <button
+                onClick={() => setShowPairingModal(true)}
+                className="flex items-center gap-1 text-[11px] font-mono text-indigo-400 hover:text-indigo-300 transition-colors cursor-pointer"
+              >
+                <ShieldCheck className="w-3.5 h-3.5" />
+                <span>Pairing PIN</span>
+              </button>
             </div>
-            <button
-              onClick={() => setShowPairingModal(true)}
-              className="flex items-center gap-1 text-[11px] font-mono text-indigo-400 hover:text-indigo-300 transition-colors cursor-pointer"
-            >
-              <ShieldCheck className="w-3.5 h-3.5" />
-              <span>Pairing PIN</span>
-            </button>
           </div>
-        </div>
 
-        {/* Tab 1: Primary Cast Arena */}
-        {activeTab === 'cast' && (
-          <div className="flex flex-col gap-6">
+          {/* Real-time Auto-Discovery Banner if no remote device yet */}
+          {activeDevices.length === 0 && (
+            <div className="p-4 rounded-2xl bg-[#0d1118] border border-cyan-500/20 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs shadow-lg">
+              <div className="flex items-center gap-3">
+                <span className="relative flex h-3 w-3">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-3 w-3 bg-cyan-500"></span>
+                </span>
+                <div>
+                  <span className="text-white font-medium">Real-Time Discovery Active: </span>
+                  <span className="text-slate-400 font-mono">
+                    Open <strong className="text-cyan-300">http://10.169.219.4:5174</strong> on your phone or plug in USB cable to auto-connect.
+                  </span>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText('http://10.169.219.4:5174')
+                  showToast('Phone URL copied to clipboard!')
+                }}
+                className="px-3 py-1.5 rounded-xl bg-cyan-950/60 text-cyan-300 border border-cyan-500/30 hover:bg-cyan-900/60 transition-all font-mono text-[11px] shrink-0"
+              >
+                Copy Phone URL
+              </button>
+            </div>
+          )}
+
+          {/* Tab 1: Primary Cast Arena */}
+          {activeTab === 'cast' && (
+            <div className="flex flex-col gap-6">
             {/* Upper Arena: Video Player + Telemetry Sidebar */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
               {/* Left 8 Cols: Video Player & Floating Controls */}

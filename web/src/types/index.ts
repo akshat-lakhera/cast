@@ -56,12 +56,14 @@ export type BridgeMessage =
 // ─── Client Message Types (to cast-core) ─────────────────────────────
 
 export type ClientMessage =
+  | { type: 'register_peer'; id: string; name: string; device_type: string; transport: string; ip?: string }
   | { type: 'scan'; transport: string }
   | { type: 'stop_scan' }
   | { type: 'connect'; device_id: string; direction: string; transport: string }
   | { type: 'start_broadcast'; resolution: string; fps: number; system_audio: boolean; microphone: boolean }
   | { type: 'stop_broadcast' }
   | { type: 'pin_submit'; pin: string }
+  | { type: 'clean_cache'; aggressive?: boolean }
   | { type: 'update_config'; resolution?: string; fps?: number; jpeg_quality?: number }
   | { type: 'disconnect' }
 

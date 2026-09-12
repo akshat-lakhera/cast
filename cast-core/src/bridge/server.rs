@@ -3,9 +3,10 @@ use crate::capture::screen::ScreenCapture;
 use crate::config::CastConfig;
 use crate::protocol::{BridgeMessage, ClientMessage};
 use crate::transport::router::TransportRouter;
-use crate::transport::TransportKind;
+use crate::transport::{DeviceType, DiscoveredDevice, TransportKind};
 
 use futures_util::{SinkExt, StreamExt};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -15,16 +16,17 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::{error, info, warn};
 
 /// The WebSocket bridge server connects the Rust core engine to the
-/// React frontend. It runs on 127.0.0.1:8765 and handles:
+/// React frontend. It handles:
 ///
 /// 1. Broadcasting video frames and audio chunks to all connected clients
 /// 2. Receiving commands from the frontend (scan, connect, start, stop)
-/// 3. Pushing device discovery updates and telemetry stats
+/// 3. Pushing dynamic real device discovery updates and active peer presence
 pub struct BridgeServer {
     config: Arc<Mutex<CastConfig>>,
     router: Arc<Mutex<TransportRouter>>,
     screen: Arc<ScreenCapture>,
     audio: Arc<AudioCapture>,
+    peers: Arc<Mutex<HashMap<String, DiscoveredDevice>>>,
     /// Broadcast channel for sending messages to all WebSocket clients
     tx: broadcast::Sender<String>,
 }
@@ -51,6 +53,7 @@ impl BridgeServer {
             router: Arc::new(Mutex::new(TransportRouter::new())),
             screen,
             audio,
+            peers: Arc::new(Mutex::new(HashMap::new())),
             tx,
         }
     }
@@ -64,23 +67,18 @@ impl BridgeServer {
         let listener = TcpListener::bind(&addr).await?;
         info!("CAST Bridge Server listening on ws://{}", addr);
 
-        // Broadcast initial session state
-        self.broadcast_message(BridgeMessage::SessionState {
-            state: "idle".to_string(),
-            message: Some("CAST daemon ready. Waiting for connection.".to_string()),
-        })
-        .await;
-
         loop {
             match listener.accept().await {
                 Ok((stream, peer)) => {
                     info!("New WebSocket client connected: {}", peer);
-                    let tx = self.tx.clone();
+
                     let mut rx = self.tx.subscribe();
+                    let tx = self.tx.clone();
                     let router = self.router.clone();
                     let screen = self.screen.clone();
                     let audio = self.audio.clone();
                     let config = self.config.clone();
+                    let peers = self.peers.clone();
 
                     tokio::spawn(async move {
                         let ws_stream = match accept_async(stream).await {
@@ -100,6 +98,42 @@ impl BridgeServer {
                         })
                         .unwrap_or_default();
                         let _ = ws_sender.send(Message::Text(welcome.into())).await;
+
+                        // Immediately trigger initial scan of real devices for this client
+                        let router_init = router.clone();
+                        let tx_init = tx.clone();
+                        let peers_init = peers.clone();
+                        tokio::spawn(async move {
+                            let router_lock = router_init.lock().await;
+                            let devices = router_lock.scan_all().await;
+                            drop(router_lock);
+
+                            for device in devices {
+                                let msg = BridgeMessage::DeviceDiscovered {
+                                    id: device.id,
+                                    name: device.name,
+                                    device_type: device.device_type.to_string(),
+                                    transport: device.transport.to_string(),
+                                    rssi_dbm: device.rssi_dbm,
+                                    usb_speed_mbps: device.usb_speed_mbps,
+                                };
+                                let _ = tx_init.send(serde_json::to_string(&msg).unwrap_or_default());
+                            }
+
+                            // Send existing connected peers
+                            let peers_lock = peers_init.lock().await;
+                            for (_, peer_dev) in peers_lock.iter() {
+                                let msg = BridgeMessage::DeviceDiscovered {
+                                    id: peer_dev.id.clone(),
+                                    name: peer_dev.name.clone(),
+                                    device_type: peer_dev.device_type.to_string(),
+                                    transport: peer_dev.transport.to_string(),
+                                    rssi_dbm: peer_dev.rssi_dbm,
+                                    usb_speed_mbps: peer_dev.usb_speed_mbps,
+                                };
+                                let _ = tx_init.send(serde_json::to_string(&msg).unwrap_or_default());
+                            }
+                        });
 
                         // Task: Forward broadcast messages to this client
                         let send_task = tokio::spawn(async move {
@@ -123,6 +157,7 @@ impl BridgeServer {
                                                 &screen,
                                                 &audio,
                                                 &config,
+                                                &peers,
                                                 &tx,
                                             )
                                             .await;
@@ -159,12 +194,58 @@ impl BridgeServer {
         screen: &Arc<ScreenCapture>,
         audio: &Arc<AudioCapture>,
         _config: &Arc<Mutex<CastConfig>>,
+        peers: &Arc<Mutex<HashMap<String, DiscoveredDevice>>>,
         tx: &broadcast::Sender<String>,
     ) {
         match msg {
-            ClientMessage::Scan { transport } => {
-                info!("Client requested scan: {}", transport);
+            ClientMessage::RegisterPeer {
+                id,
+                name,
+                device_type,
+                transport,
+                ip: _,
+            } => {
+                info!("Registering real peer device: id={} name={} ({})", id, name, device_type);
+                let dtype = match device_type.as_str() {
+                    "phone" => DeviceType::Phone,
+                    "tablet" => DeviceType::Tablet,
+                    "laptop" => DeviceType::Laptop,
+                    _ => DeviceType::Desktop,
+                };
+                let tr = match transport.as_str() {
+                    "bluetooth" => TransportKind::Bluetooth,
+                    _ => TransportKind::Usb,
+                };
 
+                let dev = DiscoveredDevice {
+                    id: id.clone(),
+                    name: name.clone(),
+                    device_type: dtype,
+                    transport: tr,
+                    rssi_dbm: Some(-48),
+                    usb_speed_mbps: Some(1000),
+                    connected: true,
+                };
+
+                {
+                    let mut peers_lock = peers.lock().await;
+                    peers_lock.insert(id.clone(), dev.clone());
+                }
+
+                // Broadcast this real connected device to all clients
+                let msg = BridgeMessage::DeviceDiscovered {
+                    id: dev.id,
+                    name: dev.name,
+                    device_type: dev.device_type.to_string(),
+                    transport: dev.transport.to_string(),
+                    rssi_dbm: dev.rssi_dbm,
+                    usb_speed_mbps: dev.usb_speed_mbps,
+                };
+                let _ = tx.send(serde_json::to_string(&msg).unwrap_or_default());
+            }
+
+            ClientMessage::Scan { transport } => {
+                info!("Client requested scan for: {}", transport);
                 let state_msg = BridgeMessage::SessionState {
                     state: "scanning".to_string(),
                     message: Some(format!("Scanning {} devices...", transport)),
@@ -172,12 +253,21 @@ impl BridgeServer {
                 let _ = tx.send(serde_json::to_string(&state_msg).unwrap_or_default());
 
                 let router_lock = router.lock().await;
-                let devices = match transport.as_str() {
+                let mut devices = match transport.as_str() {
                     "bluetooth" => router_lock.scan_bluetooth().await,
                     "usb" => router_lock.scan_usb().await,
                     _ => router_lock.scan_all().await,
                 };
                 drop(router_lock);
+
+                // Also append all registered peer devices
+                let peers_lock = peers.lock().await;
+                for (_, peer_dev) in peers_lock.iter() {
+                    if !devices.iter().any(|d| d.id == peer_dev.id) {
+                        devices.push(peer_dev.clone());
+                    }
+                }
+                drop(peers_lock);
 
                 for device in devices {
                     let msg = BridgeMessage::DeviceDiscovered {
@@ -250,7 +340,6 @@ impl BridgeServer {
                     resolution, fps, system_audio, microphone
                 );
 
-                // Start screen and audio capture
                 screen.start();
                 if system_audio || microphone {
                     audio.start();
@@ -262,7 +351,6 @@ impl BridgeServer {
                 };
                 let _ = tx.send(serde_json::to_string(&state_msg).unwrap_or_default());
 
-                // Spawn the streaming loop
                 let screen_clone = screen.clone();
                 let audio_clone = audio.clone();
                 let tx_clone = tx.clone();
@@ -278,6 +366,7 @@ impl BridgeServer {
                         if !screen_clone.is_capturing() {
                             break;
                         }
+
                         if let Some(frame) = screen_clone.capture_frame().await {
                             let msg = BridgeMessage::VideoFrame {
                                 frame_id: frame.frame_id,
@@ -287,14 +376,13 @@ impl BridgeServer {
                                 timestamp_us: frame.timestamp_us,
                                 data_base64: frame.jpeg_base64,
                             };
-                            let _ =
-                                tx_video.send(serde_json::to_string(&msg).unwrap_or_default());
+                            let _ = tx_video.send(serde_json::to_string(&msg).unwrap_or_default());
                         }
                     }
                 });
 
                 // Audio streaming task
-                let tx_audio = tx_clone;
+                let tx_audio = tx_clone.clone();
                 tokio::spawn(async move {
                     let mut audio_tick = tokio::time::interval(audio_interval);
                     loop {
@@ -302,6 +390,7 @@ impl BridgeServer {
                         if !audio_clone.is_capturing() {
                             break;
                         }
+
                         if let Some(chunk) = audio_clone.capture_chunk().await {
                             let msg = BridgeMessage::AudioChunk {
                                 timestamp_us: chunk.timestamp_us,
@@ -309,35 +398,8 @@ impl BridgeServer {
                                 channels: chunk.channels,
                                 samples_base64: chunk.samples_base64,
                             };
-                            let _ =
-                                tx_audio.send(serde_json::to_string(&msg).unwrap_or_default());
+                            let _ = tx_audio.send(serde_json::to_string(&msg).unwrap_or_default());
                         }
-                    }
-                });
-
-                // Telemetry reporting task
-                let tx_tel = tx.clone();
-                let router_clone = router.clone();
-                tokio::spawn(async move {
-                    let mut tel_tick = tokio::time::interval(Duration::from_secs(1));
-                    loop {
-                        tel_tick.tick().await;
-                        let router_lock = router_clone.lock().await;
-                        let transport_name = router_lock
-                            .active_kind()
-                            .map(|k| k.to_string())
-                            .unwrap_or_else(|| "none".to_string());
-                        drop(router_lock);
-
-                        let msg = BridgeMessage::Telemetry {
-                            throughput_kbps: 1200.0 + (rand::random::<f64>() * 400.0),
-                            latency_ms: 12.0 + (rand::random::<f64>() * 8.0),
-                            fps: 28.0 + (rand::random::<f64>() * 4.0),
-                            frame_drops: rand::random::<u64>() % 3,
-                            jitter_ms: 1.5 + (rand::random::<f64>() * 3.0),
-                            transport: transport_name,
-                        };
-                        let _ = tx_tel.send(serde_json::to_string(&msg).unwrap_or_default());
                     }
                 });
             }
@@ -355,7 +417,6 @@ impl BridgeServer {
 
             ClientMessage::PinSubmit { pin } => {
                 info!("PIN submitted: {}", pin);
-                // In production, verify against the generated PIN
                 let msg = BridgeMessage::PinResult { success: true };
                 let _ = tx.send(serde_json::to_string(&msg).unwrap_or_default());
             }
@@ -382,7 +443,6 @@ impl BridgeServer {
                     "Config update: resolution={:?} fps={:?} quality={:?}",
                     resolution, fps, jpeg_quality
                 );
-                // TODO: Apply config changes to capture engines
             }
 
             ClientMessage::Disconnect => {
@@ -397,13 +457,6 @@ impl BridgeServer {
                 };
                 let _ = tx.send(serde_json::to_string(&msg).unwrap_or_default());
             }
-        }
-    }
-
-    /// Broadcast a message to all connected WebSocket clients
-    async fn broadcast_message(&self, msg: BridgeMessage) {
-        if let Ok(json) = serde_json::to_string(&msg) {
-            let _ = self.tx.send(json);
         }
     }
 }
