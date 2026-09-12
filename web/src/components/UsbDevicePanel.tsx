@@ -8,7 +8,10 @@ interface UsbDevicePanelProps {
 }
 
 export function UsbDevicePanel({ devices, onSelectDevice }: UsbDevicePanelProps) {
-  const usbDevices = devices.filter(d => d.transport === 'usb')
+  // Only display real physical USB hardware detected by the daemon, ignoring web peers
+  const usbDevices = devices.filter(
+    d => d.transport === 'usb' && (d.id.startsWith('USB:') || !d.id.startsWith('peer-'))
+  )
 
   return (
     <motion.div

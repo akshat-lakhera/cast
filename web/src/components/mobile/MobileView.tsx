@@ -19,11 +19,16 @@ import {
   RefreshCw,
   Activity,
   Layers,
+  AlertTriangle,
+  X,
+  Info,
+  Zap,
 } from 'lucide-react'
 import jsQR from 'jsqr'
 import { MobileStreamPlayer } from './MobileStreamPlayer'
 import type { DiscoveredDevice, CastDirection, TransportMode, VideoFrame } from '../../types'
 import type { ModalMode } from '../PairingModal'
+import type { ErrorDiagnostic } from '../pc/DesktopView'
 
 interface MobileViewProps {
   bridgeConnected: boolean
@@ -49,6 +54,8 @@ interface MobileViewProps {
   localStream: MediaStream | null
   isMuted: boolean
   onToggleMute: () => void
+  errorDiagnostic?: ErrorDiagnostic | null
+  onDismissError?: () => void
 }
 
 export function MobileView({
@@ -75,6 +82,8 @@ export function MobileView({
   localStream,
   isMuted,
   onToggleMute,
+  errorDiagnostic,
+  onDismissError,
 }: MobileViewProps) {
   // ShareMe Paradigm: SEND or RECEIVE mode
   const [shareMode, setShareMode] = useState<'receive' | 'send'>('receive')
@@ -256,6 +265,37 @@ export function MobileView({
             {transport}
           </span>
         </div>
+
+        {/* ─── MOBILE DIAGNOSTIC ERROR BANNER (Clear root cause & fix) ─── */}
+        {errorDiagnostic && (
+          <div className="p-3.5 rounded-2xl bg-rose-950/80 border border-rose-500/50 shadow-xl flex flex-col gap-2">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span className="text-xs font-bold text-white tracking-wide">
+                  {errorDiagnostic.title}
+                </span>
+              </div>
+              {onDismissError && (
+                <button
+                  onClick={onDismissError}
+                  className="p-1 text-rose-400 hover:text-white"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+            <p className="text-[11px] text-rose-200 leading-snug">
+              {errorDiagnostic.message}
+            </p>
+            {errorDiagnostic.fix && (
+              <div className="p-2 rounded-xl bg-black/40 border border-emerald-500/30 text-[10px] font-mono text-emerald-300 flex items-center gap-1.5">
+                <Zap className="w-3 h-3 text-emerald-400 shrink-0" />
+                <span>Fix: {errorDiagnostic.fix}</span>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* ─── SHAREME MASTER 2-OPTION SELECTOR: SEND OR RECEIVE ─── */}
         <div className="grid grid-cols-2 gap-2.5 p-1 bg-slate-900/90 border border-white/10 rounded-2xl shadow-inner">

@@ -1,11 +1,11 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Sparkles } from 'lucide-react'
 
 import { useCastBridge } from './hooks/useCastBridge'
 import { useLocalStream } from './hooks/useLocalStream'
 import { MobileView } from './components/mobile/MobileView'
-import { DesktopView } from './components/pc/DesktopView'
+import { DesktopView, type ErrorDiagnostic } from './components/pc/DesktopView'
 import { PairingModal, type ModalMode } from './components/PairingModal'
 import { detectLocalDevice } from './utils/device'
 import type { DiscoveredDevice, CastDirection, TransportMode } from './types'
@@ -27,8 +27,10 @@ export function App() {
     stream: localStream,
     isSharing: isLocalSharing,
     error: localStreamError,
+    diagnostic: localStreamDiagnostic,
     startCapture: startLocalShare,
     stopCapture: stopLocalShare,
+    clearDiagnostic: clearLocalDiagnostic,
   } = useLocalStream()
 
   // Detect local device identity (this PC or this Phone)
@@ -66,6 +68,20 @@ export function App() {
   const [pairingModalOpen, setPairingModalOpen] = useState<boolean>(false)
   const [pairingModalMode, setPairingModalMode] = useState<ModalMode>('enter_pin')
   const [isCleaning, setIsCleaning] = useState<boolean>(false)
+  const [manualDiagnostic, setManualDiagnostic] = useState<ErrorDiagnostic | null>(null)
+
+  // Active diagnostic error: surfaced from local stream picker, bridge, or explicit check
+  const activeErrorDiagnostic: ErrorDiagnostic | null =
+    manualDiagnostic ||
+    localStreamDiagnostic ||
+    (localStreamError
+      ? {
+          title: 'Stream Error',
+          message: localStreamError,
+          cause: 'An issue occurred during media stream initialization.',
+          fix: 'Click "Share Window, Tab or Screen" to select again.',
+        }
+      : null)
 
   // Trigger notification toast
   const showToast = useCallback((msg: string) => {
@@ -81,15 +97,17 @@ export function App() {
   }, [localStreamError, showToast])
 
   // Real discovered remote devices (excluding self)
-  const activeDevices = bridgeDevices.filter((d) => d.id !== localDevice.id)
+  const activeDevices = useMemo(
+    () => bridgeDevices.filter((d) => d.id !== localDevice.id),
+    [bridgeDevices, localDevice.id]
+  )
 
-  // Auto-target remote device as soon as it appears
+  // Auto-target remote device safely
   useEffect(() => {
     if (activeDevices.length > 0 && (!selectedDevice || !activeDevices.some((d) => d.id === selectedDevice.id))) {
       setSelectedDevice(activeDevices[0])
-      showToast(`Target discovered: ${activeDevices[0].name}`)
     }
-  }, [activeDevices, selectedDevice, showToast])
+  }, [activeDevices, selectedDevice])
 
   const currentDevice = selectedDevice || (activeDevices.length > 0 ? activeDevices[0] : null)
 
@@ -113,26 +131,49 @@ export function App() {
     }
   }, [sendBridgeMessage, showToast])
 
-  // Start Cast Handler
-  const handleStartCast = async () => {
-    // If direction is mobile -> PC and we are on mobile:
-    if (direction === 'mobile_to_pc' && isMobileScreen) {
-      if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
-        showToast('Mobile screen casting requires HTTPS. Use phone to watch PC stream or open https://')
+  // Start Cast Handler: Supports both Interactive Browser Selector (Window/Tab/Screen) and Direct Hardware Mirror
+  const handleStartCast = async (mode: 'picker' | 'hardware' = 'picker') => {
+    setManualDiagnostic(null)
+    clearLocalDiagnostic()
+
+    // Mode A: Interactive Browser Display Picker (Entire Screen, Specific Window, or Browser Tab)
+    if (mode === 'picker') {
+      if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getDisplayMedia) {
+        const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:'
+        const errDiag: ErrorDiagnostic = {
+          title: 'Display Capture Incompatible',
+          message: isHttps
+            ? 'Screen/Window capture is not supported in this browser. Please use Chrome, Edge, or Firefox.'
+            : 'Screen, Window, and Tab casting requires HTTPS or http://localhost. Insecure HTTP restricts screen recording.',
+          cause: isHttps ? 'Browser mediaDevices.getDisplayMedia is not available.' : 'Insecure remote origin forbids screen capture.',
+          fix: 'Open CAST at http://localhost:5174 or click "Direct Full Desktop (Hardware GDI)" instead.',
+        }
+        setManualDiagnostic(errDiag)
+        showToast(errDiag.title)
         return
       }
-      showToast('Starting screen capture...')
-      const stream = await startLocalShare(true, selectedFps, (frameMsg) => {
+
+      showToast('Opening Window / Tab / Screen selector...')
+      const stream = await startLocalShare(!isMuted, selectedFps, (frameMsg) => {
         sendBridgeMessage(frameMsg)
       })
+
       if (stream) {
         setIsCasting(true)
-        showToast('Screen streaming active to PC!')
+        if (currentDevice) {
+          sendBridgeMessage({
+            type: 'connect',
+            device_id: currentDevice.id,
+            direction,
+            transport,
+          })
+        }
+        showToast('Broadcasting selected Window / Tab / Screen!')
       }
       return
     }
 
-    // Default flow: PC desktop broadcast or Rust engine stream
+    // Mode B: Direct Full Desktop Mirror via Rust Win32 GDI Hardware Driver
     setIsCasting(true)
     sendBridgeMessage({
       type: 'start_broadcast',
@@ -151,7 +192,7 @@ export function App() {
       })
     }
 
-    showToast(`CAST broadcast started (${direction.toUpperCase()}) via ${transport.toUpperCase()}`)
+    showToast(`CAST hardware desktop broadcast started (${direction.toUpperCase()}) via ${transport.toUpperCase()}`)
   }
 
   // Stop Cast Handler
@@ -233,6 +274,11 @@ export function App() {
           localStream={localStream}
           isMuted={isMuted}
           onToggleMute={() => setIsMuted(!isMuted)}
+          errorDiagnostic={activeErrorDiagnostic}
+          onDismissError={() => {
+            setManualDiagnostic(null)
+            clearLocalDiagnostic()
+          }}
         />
       ) : (
         <DesktopView
@@ -272,6 +318,11 @@ export function App() {
           lastAudioChunk={lastAudioChunk}
           localStream={localStream}
           telemetry={telemetry}
+          errorDiagnostic={activeErrorDiagnostic}
+          onDismissError={() => {
+            setManualDiagnostic(null)
+            clearLocalDiagnostic()
+          }}
         />
       )}
 
