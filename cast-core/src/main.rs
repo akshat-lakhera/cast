@@ -29,7 +29,7 @@ enum Commands {
     /// Start the CAST daemon (WebSocket bridge + capture engines + storage auto-cleaner)
     Daemon {
         /// WebSocket host to bind to
-        #[arg(long, default_value = "127.0.0.1")]
+        #[arg(long, default_value = "0.0.0.0")]
         host: String,
 
         /// WebSocket port to bind to

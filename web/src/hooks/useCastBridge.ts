@@ -1,7 +1,15 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import type { BridgeMessage, ClientMessage, DiscoveredDevice, TelemetryStats, SessionState, VideoFrame, AudioChunk } from '../types'
 
-const WS_URL = 'ws://127.0.0.1:8765'
+function getWsUrl(): string {
+  if (typeof window !== 'undefined' && window.location) {
+    const host = window.location.hostname || '127.0.0.1'
+    return `ws://${host}:8765`
+  }
+  return 'ws://127.0.0.1:8765'
+}
+
+const WS_URL = getWsUrl()
 
 interface CastBridgeState {
   connected: boolean
