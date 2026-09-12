@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = [
+    "cast-core",
+]
+
+# ─── Storage Optimization Profiles ──────────────────────────────────
+# Prevents multi-gigabyte .pdb debug symbol and intermediate file bloat
+[profile.dev]
+debug = 1             # Line tables only — saves ~80% disk space compared to full debuginfo
+incremental = true
+opt-level = 0
+
+[profile.release]
+debug = false
+strip = true          # Strips symbols from binaries
+lto = "thin"          # Faster link time with high optimization
+opt-level = 3
+codegen-units = 1
+panic = "abort"

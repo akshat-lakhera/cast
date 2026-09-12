@@ -1,0 +1,54 @@
+[package]
+name = "cast-core"
+version = "0.1.0"
+edition = "2024"
+description = "High-performance offline screen & audio streaming engine over Bluetooth and USB"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# WebSocket for IPC bridge to frontend
+tokio-tungstenite = "0.26"
+futures-util = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Fast compression
+lz4_flex = "0.11"
+
+# Image processing (frame encoding/decoding)
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+
+# Audio capture (WASAPI loopback on Windows)
+cpal = "0.15"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# CRC for packet integrity
+crc32fast = "1"
+
+# UUID for session IDs
+uuid = { version = "1", features = ["v4"] }
+
+# Timestamp
+chrono = "0.4"
+
+# Base64 for frame encoding over JSON
+base64 = "0.22"
+
+# Random PIN generation
+rand = "0.8"
+
+# Async trait for transport abstraction
+async-trait = "0.1"
+
+# Error handling
+thiserror = "2"
