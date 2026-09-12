@@ -49,8 +49,60 @@ export function PairingModal({
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const scanStreamRef = useRef<MediaStream | null>(null)
   const animFrameRef = useRef<number | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+
+  const hasLiveCamera =
+    typeof navigator !== 'undefined' &&
+    typeof navigator.mediaDevices !== 'undefined' &&
+    typeof navigator.mediaDevices?.getUserMedia === 'function'
 
   const myDisplayPin = pairingPin || detectLocalDevice().pin
+
+  // Handle snapping photo of QR code via native camera
+  const handlePhotoCapture = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    setScanError(null)
+    const reader = new FileReader()
+    reader.onload = (event) => {
+      const img = new Image()
+      img.onload = () => {
+        const offCanvas = document.createElement('canvas')
+        offCanvas.width = img.naturalWidth
+        offCanvas.height = img.naturalHeight
+        const ctx = offCanvas.getContext('2d', { willReadFrequently: true })
+        if (!ctx) return
+        ctx.drawImage(img, 0, 0)
+        const imgData = ctx.getImageData(0, 0, offCanvas.width, offCanvas.height)
+        const code = jsQR(imgData.data, imgData.width, imgData.height, {
+          inversionAttempts: 'dontInvert',
+        })
+
+        if (code && code.data) {
+          let foundPin: string | null = null
+          try {
+            const url = new URL(code.data)
+            foundPin = url.searchParams.get('pin')
+          } catch {}
+
+          if (!foundPin) {
+            const pinMatch = code.data.match(/\b\d{6}\b/)
+            if (pinMatch) foundPin = pinMatch[0]
+          }
+
+          if (foundPin && foundPin.length === 6) {
+            setPinDigits(foundPin.split(''))
+            handleCompletePin(foundPin)
+            return
+          }
+        }
+        setScanError('Could not detect QR in photo. Please snap closer to the PC screen or enter the 6-digit PIN.')
+      }
+      img.src = event.target?.result as string
+    }
+    reader.readAsDataURL(file)
+  }
 
   // Update mode if initialMode prop changes
   useEffect(() => {
@@ -163,8 +215,14 @@ export function PairingModal({
     stopScanner()
     setScanError(null)
 
-    if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setScanError('Camera QR scanning requires HTTPS on mobile. Tap the "Enter PIN" tab above to pair instantly.')
+    // Guard: On mobile HTTP, navigator.mediaDevices is completely undefined.
+    // Never call getUserMedia if navigator.mediaDevices or getUserMedia is not present.
+    const isSupported =
+      typeof navigator !== 'undefined' &&
+      typeof navigator.mediaDevices !== 'undefined' &&
+      typeof navigator.mediaDevices?.getUserMedia === 'function'
+
+    if (!isSupported) {
       setIsScanning(false)
       return
     }
@@ -347,55 +405,112 @@ export function PairingModal({
               </button>
             </div>
 
-            {/* Mode 1: SCAN QR CODE WITH LIVE CAMERA */}
+            {/* Mode 1: SCAN QR CODE WITH LIVE CAMERA OR PHOTO SNAPSHOT */}
             {mode === 'scan_qr' && (
               <div className="flex flex-col items-center gap-3 py-1">
-                <p className="text-xs text-slate-300 text-center">
-                  Point camera at the QR code on your other device:
-                </p>
+                {/* Hidden HTML5 camera snapshot input that works on ALL mobile HTTP browsers */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  className="hidden"
+                  onChange={handlePhotoCapture}
+                />
 
-                {/* Camera Viewport */}
-                <div className="relative w-full h-64 bg-black rounded-2xl border border-indigo-500/30 overflow-hidden flex items-center justify-center shadow-2xl">
-                  <video ref={videoRef} className="w-full h-full object-cover" muted playsInline />
-                  <canvas ref={canvasRef} className="hidden" />
+                {hasLiveCamera ? (
+                  <>
+                    <p className="text-xs text-slate-300 text-center">
+                      Point camera at the QR code on your other device:
+                    </p>
 
-                  {/* Viewfinder Target Reticle */}
-                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                    <div className="relative w-44 h-44 border-2 border-cyan-400/80 rounded-2xl flex items-center justify-center shadow-[0_0_20px_rgba(6,182,212,0.3)]">
-                      {/* Scanning animated laser bar */}
-                      <motion.div
-                        animate={{ y: [-70, 70, -70] }}
-                        transition={{ duration: 2.2, repeat: Infinity, ease: 'easeInOut' }}
-                        className="absolute w-full h-0.5 bg-cyan-400 shadow-[0_0_8px_rgba(6,182,212,1)]"
-                      />
-                      <div className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
+                    {/* Camera Viewport */}
+                    <div className="relative w-full h-64 bg-black rounded-2xl border border-indigo-500/30 overflow-hidden flex items-center justify-center shadow-2xl">
+                      <video ref={videoRef} className="w-full h-full object-cover" muted playsInline />
+                      <canvas ref={canvasRef} className="hidden" />
+
+                      {/* Viewfinder Target Reticle */}
+                      <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                        <div className="relative w-44 h-44 border-2 border-cyan-400/80 rounded-2xl flex items-center justify-center shadow-[0_0_20px_rgba(6,182,212,0.3)]">
+                          <motion.div
+                            animate={{ y: [-70, 70, -70] }}
+                            transition={{ duration: 2.2, repeat: Infinity, ease: 'easeInOut' }}
+                            className="absolute w-full h-0.5 bg-cyan-400 shadow-[0_0_8px_rgba(6,182,212,1)]"
+                          />
+                          <div className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
+                        </div>
+                      </div>
+
+                      {isScanning && (
+                        <div className="absolute bottom-2 px-3 py-1 rounded-full bg-black/80 backdrop-blur-md text-[10px] font-mono text-cyan-300 border border-cyan-500/30">
+                          Live Camera Active • Scanning...
+                        </div>
+                      )}
+
+                      {scanError && (
+                        <div className="absolute inset-0 bg-black/90 p-4 flex flex-col items-center justify-center text-center gap-2">
+                          <AlertCircle className="w-8 h-8 text-rose-400" />
+                          <p className="text-xs text-rose-300">{scanError}</p>
+                          <button
+                            onClick={startScanner}
+                            className="mt-2 px-4 py-2 rounded-xl bg-slate-800 text-white text-xs flex items-center gap-1.5 hover:bg-slate-700 transition-all cursor-pointer"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5" />
+                            <span>Retry Camera</span>
+                          </button>
+                        </div>
+                      )}
                     </div>
+
+                    <div className="text-[11px] font-mono text-slate-400 text-center">
+                      Instant auto-connect upon QR detection
+                    </div>
+                  </>
+                ) : (
+                  /* When on Mobile HTTP where browser restricts getUserMedia */
+                  <div className="w-full flex flex-col items-center gap-4 py-3">
+                    <div className="w-16 h-16 rounded-2xl bg-cyan-950/60 border border-cyan-500/30 flex items-center justify-center text-cyan-400 shadow-lg">
+                      <Camera className="w-8 h-8" />
+                    </div>
+
+                    <div className="text-center">
+                      <h4 className="text-sm font-semibold text-white">Camera QR Scanner</h4>
+                      <p className="text-xs text-slate-400 mt-1 max-w-xs">
+                        Snap a photo of the QR code on the PC screen to pair instantly.
+                      </p>
+                    </div>
+
+                    {scanError && (
+                      <div className="p-3 rounded-xl bg-rose-950/60 border border-rose-500/40 text-rose-300 text-xs text-center flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4 shrink-0" />
+                        <span>{scanError}</span>
+                      </div>
+                    )}
+
+                    <motion.button
+                      whileTap={{ scale: 0.97 }}
+                      onClick={() => fileInputRef.current?.click()}
+                      className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-cyan-500 to-indigo-600 text-white text-sm font-bold flex items-center justify-center gap-2 shadow-lg shadow-cyan-500/20 active:scale-95 transition-all cursor-pointer border border-cyan-300/30"
+                    >
+                      <Camera className="w-4 h-4" />
+                      <span>TAKE PHOTO OF PC QR CODE</span>
+                    </motion.button>
+
+                    <div className="flex items-center gap-2 w-full">
+                      <div className="h-px bg-white/10 flex-1" />
+                      <span className="text-[10px] font-mono text-slate-500 uppercase">Or faster</span>
+                      <div className="h-px bg-white/10 flex-1" />
+                    </div>
+
+                    <button
+                      onClick={() => setMode('enter_pin')}
+                      className="w-full py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium flex items-center justify-center gap-2 border border-white/10 transition-all cursor-pointer"
+                    >
+                      <KeyRound className="w-4 h-4 text-indigo-400" />
+                      <span>Type 6-Digit PC PIN Directly</span>
+                    </button>
                   </div>
-
-                  {isScanning && (
-                    <div className="absolute bottom-2 px-3 py-1 rounded-full bg-black/80 backdrop-blur-md text-[10px] font-mono text-cyan-300 border border-cyan-500/30">
-                      Camera Active • Scanning QR Matrix...
-                    </div>
-                  )}
-
-                  {scanError && (
-                    <div className="absolute inset-0 bg-black/90 p-4 flex flex-col items-center justify-center text-center gap-2">
-                      <AlertCircle className="w-8 h-8 text-rose-400" />
-                      <p className="text-xs text-rose-300">{scanError}</p>
-                      <button
-                        onClick={startScanner}
-                        className="mt-2 px-4 py-2 rounded-xl bg-slate-800 text-white text-xs flex items-center gap-1.5 hover:bg-slate-700 transition-all cursor-pointer"
-                      >
-                        <RefreshCw className="w-3.5 h-3.5" />
-                        <span>Retry Camera</span>
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                <div className="text-[11px] font-mono text-slate-400 text-center">
-                  Instant auto-connect upon QR detection
-                </div>
+                )}
               </div>
             )}
 

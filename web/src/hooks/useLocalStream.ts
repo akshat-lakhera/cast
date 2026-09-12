@@ -49,7 +49,7 @@ export function useLocalStream() {
   ) => {
     stopCapture()
 
-    if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+    if (typeof navigator === 'undefined' || typeof navigator.mediaDevices?.getDisplayMedia !== 'function') {
       const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:'
       const err = isHttps
         ? 'Screen capture is not supported in this mobile browser. Use this device as a display to watch the PC stream.'
