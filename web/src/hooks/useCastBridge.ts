@@ -4,6 +4,12 @@ import { detectLocalDevice } from '../utils/device'
 
 function getWsUrl(): string {
   if (typeof window !== 'undefined' && window.location) {
+    const isHttps = window.location.protocol === 'https:'
+    const protocol = isHttps ? 'wss:' : 'ws:'
+    // When using HTTPS, use the Vite dev server proxy /ws to prevent SSL/mixed-content blocks
+    if (isHttps) {
+      return `${protocol}//${window.location.host}/ws`
+    }
     const host = window.location.hostname || '127.0.0.1'
     return `ws://${host}:8765`
   }
@@ -37,7 +43,7 @@ export function useCastBridge() {
     telemetry: null,
     lastFrame: null,
     lastAudioChunk: null,
-    pin: null,
+    pin: typeof window !== 'undefined' ? detectLocalDevice().pin : null,
     pinVerified: null,
     error: null,
   })
@@ -50,15 +56,16 @@ export function useCastBridge() {
       wsRef.current = ws
 
       ws.onopen = () => {
+        const local = detectLocalDevice()
         setState(prev => ({
           ...prev,
           connected: true,
           error: null,
+          pin: local.pin,
           sessionMessage: 'Connected to CAST daemon.',
         }))
 
         // Auto-register this device identity with the bridge
-        const local = detectLocalDevice()
         const regMsg: ClientMessage = {
           type: 'register_peer',
           id: local.id,

@@ -46,7 +46,7 @@ impl BridgeServer {
             session.audio.microphone,
         ));
 
-        let (tx, _) = broadcast::channel(128);
+        let (tx, _) = broadcast::channel(512);
 
         Self {
             config: Arc::new(Mutex::new(config)),
@@ -137,9 +137,20 @@ impl BridgeServer {
 
                         // Task: Forward broadcast messages to this client
                         let send_task = tokio::spawn(async move {
-                            while let Ok(msg) = rx.recv().await {
-                                if ws_sender.send(Message::Text(msg.into())).await.is_err() {
-                                    break;
+                            loop {
+                                match rx.recv().await {
+                                    Ok(msg) => {
+                                        if ws_sender.send(Message::Text(msg.into())).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                                        // Network lag dropped older frames; continue streaming newest frames!
+                                        continue;
+                                    }
+                                    Err(broadcast::error::RecvError::Closed) => {
+                                        break;
+                                    }
                                 }
                             }
                         });
@@ -419,6 +430,45 @@ impl BridgeServer {
                 info!("PIN submitted: {}", pin);
                 let msg = BridgeMessage::PinResult { success: true };
                 let _ = tx.send(serde_json::to_string(&msg).unwrap_or_default());
+
+                // Auto-transition session to streaming so all connected peers enter the arena
+                let state_msg = BridgeMessage::SessionState {
+                    state: "streaming".to_string(),
+                    message: Some("PIN Verified! Stream Connected.".to_string()),
+                };
+                let _ = tx.send(serde_json::to_string(&state_msg).unwrap_or_default());
+
+                // Ensure screen capture and broadcast are actively running
+                if !screen.is_capturing() {
+                    screen.start();
+                    audio.start();
+
+                    let screen_clone = screen.clone();
+                    let tx_video = tx.clone();
+                    let frame_interval = Duration::from_millis(1000 / 30);
+
+                    tokio::spawn(async move {
+                        let mut frame_tick = tokio::time::interval(frame_interval);
+                        loop {
+                            frame_tick.tick().await;
+                            if !screen_clone.is_capturing() {
+                                break;
+                            }
+
+                            if let Some(frame) = screen_clone.capture_frame().await {
+                                let msg = BridgeMessage::VideoFrame {
+                                    frame_id: frame.frame_id,
+                                    width: frame.width,
+                                    height: frame.height,
+                                    is_keyframe: frame.is_keyframe,
+                                    timestamp_us: frame.timestamp_us,
+                                    data_base64: frame.jpeg_base64,
+                                };
+                                let _ = tx_video.send(serde_json::to_string(&msg).unwrap_or_default());
+                            }
+                        }
+                    });
+                }
             }
 
             ClientMessage::CleanCache { aggressive } => {
@@ -443,6 +493,41 @@ impl BridgeServer {
                     "Config update: resolution={:?} fps={:?} quality={:?}",
                     resolution, fps, jpeg_quality
                 );
+            }
+
+            ClientMessage::UploadFrame {
+                frame_id,
+                width,
+                height,
+                is_keyframe,
+                timestamp_us,
+                data_base64,
+            } => {
+                // Re-broadcast frame from client (e.g. Mobile screen) to all peers (PC)
+                let msg = BridgeMessage::VideoFrame {
+                    frame_id,
+                    width,
+                    height,
+                    is_keyframe,
+                    timestamp_us,
+                    data_base64,
+                };
+                let _ = tx.send(serde_json::to_string(&msg).unwrap_or_default());
+            }
+
+            ClientMessage::UploadAudio {
+                timestamp_us,
+                sample_rate,
+                channels,
+                samples_base64,
+            } => {
+                let msg = BridgeMessage::AudioChunk {
+                    timestamp_us,
+                    sample_rate,
+                    channels,
+                    samples_base64,
+                };
+                let _ = tx.send(serde_json::to_string(&msg).unwrap_or_default());
             }
 
             ClientMessage::Disconnect => {

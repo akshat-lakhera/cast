@@ -5,6 +5,7 @@ export interface LocalDeviceInfo {
   name: string
   device_type: DeviceType
   is_mobile: boolean
+  pin: string
 }
 
 export function detectLocalDevice(): LocalDeviceInfo {
@@ -18,6 +19,18 @@ export function detectLocalDevice(): LocalDeviceInfo {
     }
   } catch {
     id = `peer-${Math.random().toString(36).substring(2, 9)}`
+  }
+
+  // Generate or retrieve unique dynamic 6-digit security PIN for this specific device
+  let pin = ''
+  try {
+    pin = sessionStorage.getItem('cast_device_pin') || ''
+    if (!pin || pin.length !== 6) {
+      pin = Math.floor(100000 + Math.random() * 900000).toString()
+      sessionStorage.setItem('cast_device_pin', pin)
+    }
+  } catch {
+    pin = Math.floor(100000 + Math.random() * 900000).toString()
   }
 
   const ua = navigator.userAgent || ''
@@ -66,5 +79,5 @@ export function detectLocalDevice(): LocalDeviceInfo {
     is_mobile = false
   }
 
-  return { id, name, device_type, is_mobile }
+  return { id, name, device_type, is_mobile, pin }
 }

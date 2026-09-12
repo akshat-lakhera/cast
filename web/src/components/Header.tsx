@@ -1,14 +1,15 @@
 import { motion } from 'framer-motion'
-import { Wifi, WifiOff, Bluetooth, Usb, Radio } from 'lucide-react'
+import { Wifi, WifiOff, Bluetooth, Usb, Radio, Smartphone } from 'lucide-react'
 
 interface HeaderProps {
   connected: boolean
   sessionState: string
   sessionMessage: string
   transport?: string
+  onSwitchToMobile?: () => void
 }
 
-export function Header({ connected, sessionState, sessionMessage, transport }: HeaderProps) {
+export function Header({ connected, sessionState, sessionMessage, transport, onSwitchToMobile }: HeaderProps) {
   return (
     <motion.header
       initial={{ opacity: 0, y: -20 }}
@@ -72,6 +73,18 @@ export function Header({ connected, sessionState, sessionMessage, transport }: H
           <Wifi className="w-4 h-4 text-cast-emerald" />
         ) : (
           <WifiOff className="w-4 h-4 text-obsidian-400" />
+        )}
+
+        {/* Switch to Mobile UI button */}
+        {onSwitchToMobile && (
+          <button
+            onClick={onSwitchToMobile}
+            className="px-2.5 py-1 rounded-xl bg-obsidian-700 hover:bg-obsidian-600 text-obsidian-100 border border-obsidian-500/40 text-xs font-mono flex items-center gap-1.5 active:scale-95 transition-all"
+            title="Switch to Mobile View"
+          >
+            <Smartphone className="w-3.5 h-3.5 text-cast-cyan" />
+            <span className="hidden sm:inline">Mobile UI</span>
+          </button>
         )}
       </div>
     </motion.header>

@@ -160,9 +160,9 @@ export function VideoPlayerCanvas({
       >
         <canvas
           ref={canvasRef}
-          className={`max-w-full max-h-full rounded-lg shadow-2xl ${
-            fitMode === 'contain' ? 'object-contain' : 'object-cover'
-          } ${isActive ? 'opacity-100' : 'opacity-0'} transition-opacity duration-300`}
+          className={`${
+            fitMode === 'contain' ? 'max-w-full max-h-full object-contain' : 'w-full h-full object-cover'
+          } rounded-lg shadow-2xl ${isActive ? 'opacity-100' : 'opacity-0'} transition-opacity duration-300`}
         />
 
         {/* Standby / Offline Screen when inactive */}

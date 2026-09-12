@@ -65,6 +65,8 @@ export type ClientMessage =
   | { type: 'pin_submit'; pin: string }
   | { type: 'clean_cache'; aggressive?: boolean }
   | { type: 'update_config'; resolution?: string; fps?: number; jpeg_quality?: number }
+  | { type: 'upload_frame'; frame_id: number; width: number; height: number; is_keyframe: boolean; timestamp_us: number; data_base64: string }
+  | { type: 'upload_audio'; timestamp_us: number; sample_rate: number; channels: number; samples_base64: string }
   | { type: 'disconnect' }
 
 // ─── Wizard Step ─────────────────────────────────────────────────────

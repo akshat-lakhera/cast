@@ -1,25 +1,12 @@
 import { useState, useCallback, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import {
-  Monitor,
-  Radio,
-  Cable,
-  ShieldCheck,
-  Layers,
-  Sparkles,
-} from 'lucide-react'
+import { Sparkles } from 'lucide-react'
 
 import { useCastBridge } from './hooks/useCastBridge'
 import { useLocalStream } from './hooks/useLocalStream'
-import { Header } from './components/Header'
-import { ConnectionWizard } from './components/ConnectionWizard'
-import { BluetoothRadar } from './components/BluetoothRadar'
-import { UsbDevicePanel } from './components/UsbDevicePanel'
-import { VideoPlayerCanvas } from './components/VideoPlayerCanvas'
-import { AudioVisualizer } from './components/AudioVisualizer'
-import { TelemetryPanel } from './components/TelemetryPanel'
-import { ControlsBar } from './components/ControlsBar'
-import { PairingModal } from './components/PairingModal'
+import { MobileView } from './components/mobile/MobileView'
+import { DesktopView } from './components/pc/DesktopView'
+import { PairingModal, type ModalMode } from './components/PairingModal'
 import { detectLocalDevice } from './utils/device'
 import type { DiscoveredDevice, CastDirection, TransportMode } from './types'
 
@@ -39,45 +26,113 @@ export function App() {
   const {
     stream: localStream,
     isSharing: isLocalSharing,
+    error: localStreamError,
     startCapture: startLocalShare,
     stopCapture: stopLocalShare,
   } = useLocalStream()
 
-  // UI state
-  const [activeTab, setActiveTab] = useState<'cast' | 'devices' | 'wizard'>('cast')
+  // Detect local device identity (this PC or this Phone)
+  const localDevice = detectLocalDevice()
+  const [isMobileScreen, setIsMobileScreen] = useState<boolean>(
+    typeof window !== 'undefined' ? window.innerWidth < 768 || localDevice.is_mobile : false
+  )
+
+  // Reactive screen resize listener
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobileScreen(window.innerWidth < 768 || localDevice.is_mobile)
+    }
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [localDevice.is_mobile])
+
+  // UI view mode: 'auto' | 'mobile' | 'pc'
+  const [uiMode, setUiMode] = useState<'auto' | 'mobile' | 'pc'>('auto')
+  const activeView = uiMode === 'auto' ? (isMobileScreen ? 'mobile' : 'pc') : uiMode
+
+  // Core stream states
+  const [direction, setDirection] = useState<CastDirection>('pc_to_mobile')
+  const [transport, setTransport] = useState<TransportMode>('usb')
   const [selectedDevice, setSelectedDevice] = useState<DiscoveredDevice | null>(null)
   const [isCasting, setIsCasting] = useState<boolean>(false)
   const [isPaused, setIsPaused] = useState<boolean>(false)
   const [isMuted, setIsMuted] = useState<boolean>(false)
-  const [showPairingModal, setShowPairingModal] = useState<boolean>(false)
   const [selectedResolution, setSelectedResolution] = useState<string>('1080p')
   const [selectedFps, setSelectedFps] = useState<number>(60)
   const [notification, setNotification] = useState<string | null>(null)
+  const [hardwareTab, setHardwareTab] = useState<'both' | 'usb' | 'bluetooth'>('both')
 
-  // Trigger flash notification
+  // Pairing modal state
+  const [pairingModalOpen, setPairingModalOpen] = useState<boolean>(false)
+  const [pairingModalMode, setPairingModalMode] = useState<ModalMode>('enter_pin')
+  const [isCleaning, setIsCleaning] = useState<boolean>(false)
+
+  // Trigger notification toast
   const showToast = useCallback((msg: string) => {
     setNotification(msg)
-    setTimeout(() => setNotification(null), 3000)
+    setTimeout(() => setNotification(null), 3500)
   }, [])
 
-  // Detect local device identity (this PC or this Phone)
-  const localDevice = detectLocalDevice()
+  // Auto-display any stream errors
+  useEffect(() => {
+    if (localStreamError) {
+      showToast(`⚠️ ${localStreamError}`)
+    }
+  }, [localStreamError, showToast])
 
   // Real discovered remote devices (excluding self)
-  const activeDevices = bridgeDevices.filter(d => d.id !== localDevice.id)
+  const activeDevices = bridgeDevices.filter((d) => d.id !== localDevice.id)
 
-  // Automatically select the remote target device as soon as it appears (zero manual picking needed!)
+  // Auto-target remote device as soon as it appears
   useEffect(() => {
-    if (activeDevices.length > 0 && (!selectedDevice || !activeDevices.some(d => d.id === selectedDevice.id))) {
+    if (activeDevices.length > 0 && (!selectedDevice || !activeDevices.some((d) => d.id === selectedDevice.id))) {
       setSelectedDevice(activeDevices[0])
-      showToast(`Auto-detected & selected: ${activeDevices[0].name}`)
+      showToast(`Target discovered: ${activeDevices[0].name}`)
     }
   }, [activeDevices, selectedDevice, showToast])
 
   const currentDevice = selectedDevice || (activeDevices.length > 0 ? activeDevices[0] : null)
 
-  // Handlers
-  const handleStartCast = () => {
+  // Auto-transition to streaming whenever bridge daemon enters streaming
+  useEffect(() => {
+    if (sessionState === 'streaming') {
+      setIsCasting(true)
+    } else if (sessionState === 'idle') {
+      setIsCasting(false)
+    }
+  }, [sessionState])
+
+  // Auto-authenticate if opened via ?pin=XXXXXX from scanned QR
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const pinFromUrl = params.get('pin')
+    if (pinFromUrl && pinFromUrl.length === 6) {
+      sendBridgeMessage({ type: 'pin_submit', pin: pinFromUrl })
+      setIsCasting(true)
+      showToast(`Auto-paired with PIN: ${pinFromUrl}`)
+    }
+  }, [sendBridgeMessage, showToast])
+
+  // Start Cast Handler
+  const handleStartCast = async () => {
+    // If direction is mobile -> PC and we are on mobile:
+    if (direction === 'mobile_to_pc' && isMobileScreen) {
+      if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+        showToast('Mobile screen casting requires HTTPS. Use phone to watch PC stream or open https://')
+        return
+      }
+      showToast('Starting screen capture...')
+      const stream = await startLocalShare(true, selectedFps, (frameMsg) => {
+        sendBridgeMessage(frameMsg)
+      })
+      if (stream) {
+        setIsCasting(true)
+        showToast('Screen streaming active to PC!')
+      }
+      return
+    }
+
+    // Default flow: PC desktop broadcast or Rust engine stream
     setIsCasting(true)
     sendBridgeMessage({
       type: 'start_broadcast',
@@ -86,267 +141,147 @@ export function App() {
       system_audio: !isMuted,
       microphone: false,
     })
-    showToast(`CAST started to ${currentDevice.name} via ${currentDevice.transport.toUpperCase()}`)
+
+    if (currentDevice) {
+      sendBridgeMessage({
+        type: 'connect',
+        device_id: currentDevice.id,
+        direction,
+        transport,
+      })
+    }
+
+    showToast(`CAST broadcast started (${direction.toUpperCase()}) via ${transport.toUpperCase()}`)
   }
 
+  // Stop Cast Handler
   const handleStopCast = () => {
     setIsCasting(false)
     if (isLocalSharing) stopLocalShare()
     sendBridgeMessage({ type: 'stop_broadcast' })
-    showToast('Casting session ended')
+    showToast('Casting session stopped')
   }
 
-  const handleDeviceSelect = (device: DiscoveredDevice) => {
-    setSelectedDevice(device)
-    showToast(`Selected device: ${device.name}`)
-    setShowPairingModal(true)
-  }
-
+  // Verify PIN Handler
   const handleVerifyPin = (pin: string) => {
     sendBridgeMessage({ type: 'pin_submit', pin })
-    showToast(`Handshake verified with PIN: ${pin}`)
+    showToast(`Verifying PIN ${pin}...`)
+    if (currentDevice) {
+      sendBridgeMessage({
+        type: 'connect',
+        device_id: currentDevice.id,
+        direction,
+        transport,
+      })
+    }
+    setIsCasting(true)
     setTimeout(() => {
-      setShowPairingModal(false)
-    }, 1000)
+      setPairingModalOpen(false)
+      showToast('PIN Verified & Device Paired!')
+    }, 600)
   }
 
-  const handleTakeSnapshot = () => {
-    showToast('Snapshot saved to ~/Pictures/CAST_Screen.png')
+  // Device selection
+  const handleSelectDevice = (device: DiscoveredDevice) => {
+    setSelectedDevice(device)
+    setTransport(device.transport)
+    showToast(`Selected ${device.name} via ${device.transport.toUpperCase()}`)
   }
+
+  // Cache cleaning
+  const handleCleanCache = () => {
+    setIsCleaning(true)
+    sendBridgeMessage({ type: 'clean_cache', aggressive: true })
+    setTimeout(() => {
+      setIsCleaning(false)
+      showToast('Storage cache cleaned: Freed build and frame storage.')
+    }, 1500)
+  }
+
+  const openPairing = (mode: ModalMode) => {
+    setPairingModalMode(mode)
+    setPairingModalOpen(true)
+  }
+
+  // Active stream condition: only active when casting or receiving frames in active session
+  const isStreamActive = (isCasting || isLocalSharing || sessionState === 'streaming') && sessionState !== 'idle'
 
   return (
-    <div className="min-h-screen bg-[#050709] text-slate-100 flex flex-col font-sans selection:bg-indigo-500/30 selection:text-indigo-200">
-      {/* Top Header */}
-      <Header
-        connected={bridgeConnected}
-        sessionState={isCasting ? 'streaming' : sessionState}
-        sessionMessage={sessionMessage}
-        transport={currentDevice?.transport === 'usb' ? 'usb' : 'bluetooth'}
-      />
+    <>
+      {activeView === 'mobile' ? (
+        <MobileView
+          bridgeConnected={bridgeConnected}
+          sessionState={sessionState}
+          sessionMessage={sessionMessage}
+          bridgePin={bridgePin}
+          localDevicePin={localDevice.pin}
+          localDeviceName={localDevice.name}
+          localDeviceId={localDevice.id}
+          activeDevices={activeDevices}
+          currentDevice={currentDevice}
+          transport={transport}
+          setTransport={setTransport}
+          direction={direction}
+          setDirection={setDirection}
+          onStartCast={handleStartCast}
+          onStopCast={handleStopCast}
+          onOpenPairing={openPairing}
+          onSwitchToPc={() => setUiMode('pc')}
+          onToast={showToast}
+          isStreamActive={isStreamActive}
+          lastFrame={lastFrame}
+          localStream={localStream}
+          isMuted={isMuted}
+          onToggleMute={() => setIsMuted(!isMuted)}
+        />
+      ) : (
+        <DesktopView
+          bridgeConnected={bridgeConnected}
+          sessionState={sessionState}
+          sessionMessage={sessionMessage}
+          bridgePin={bridgePin}
+          localDevicePin={localDevice.pin}
+          localDeviceId={localDevice.id}
+          activeDevices={activeDevices}
+          currentDevice={currentDevice}
+          selectedDevice={selectedDevice}
+          onSelectDevice={handleSelectDevice}
+          transport={transport}
+          setTransport={setTransport}
+          direction={direction}
+          setDirection={setDirection}
+          selectedResolution={selectedResolution}
+          setSelectedResolution={setSelectedResolution}
+          selectedFps={selectedFps}
+          setSelectedFps={setSelectedFps}
+          isMuted={isMuted}
+          setIsMuted={setIsMuted}
+          isPaused={isPaused}
+          setIsPaused={setIsPaused}
+          hardwareTab={hardwareTab}
+          setHardwareTab={setHardwareTab}
+          onStartCast={handleStartCast}
+          onStopCast={handleStopCast}
+          onOpenPairing={openPairing}
+          onCleanCache={handleCleanCache}
+          isCleaning={isCleaning}
+          onSwitchToMobile={() => setUiMode('mobile')}
+          onToast={showToast}
+          isStreamActive={isStreamActive}
+          lastFrame={lastFrame}
+          lastAudioChunk={lastAudioChunk}
+          localStream={localStream}
+          telemetry={telemetry}
+        />
+      )}
 
-      {/* Main App Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-6 flex flex-col gap-6">
-        {/* Navigation & Mode Bar */}
-        <div className="flex flex-wrap items-center justify-between gap-4 bg-[#0d1118]/80 border border-white/10 rounded-2xl p-2 backdrop-blur-xl">
-          {/* Tab buttons */}
-          <div className="flex items-center gap-1.5">
-            <button
-              onClick={() => setActiveTab('cast')}
-              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-medium transition-all cursor-pointer ${
-                activeTab === 'cast'
-                  ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
-                  : 'text-slate-400 hover:text-white hover:bg-white/5'
-              }`}
-            >
-              <Monitor className="w-3.5 h-3.5" />
-              <span>Cast Arena</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('devices')}
-              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-medium transition-all cursor-pointer ${
-                activeTab === 'devices'
-                  ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
-                  : 'text-slate-400 hover:text-white hover:bg-white/5'
-              }`}
-            >
-              <Radio className="w-3.5 h-3.5" />
-              <span>Discovery & Radar</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('wizard')}
-              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-medium transition-all cursor-pointer ${
-                activeTab === 'wizard'
-                  ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
-                  : 'text-slate-400 hover:text-white hover:bg-white/5'
-              }`}
-            >
-              <Layers className="w-3.5 h-3.5" />
-              <span>Connection Wizard</span>
-            </button>
-          </div>
-
-            {/* Quick Info Badge */}
-            <div className="flex items-center gap-3 px-3 py-1.5 rounded-xl bg-black/40 border border-white/5 text-xs">
-              <div className="flex items-center gap-1.5 text-slate-400">
-                <span>Target:</span>
-                <span className="font-semibold text-white">
-                  {currentDevice ? currentDevice.name : 'Searching for device...'}
-                </span>
-              </div>
-              <button
-                onClick={() => setShowPairingModal(true)}
-                className="flex items-center gap-1 text-[11px] font-mono text-indigo-400 hover:text-indigo-300 transition-colors cursor-pointer"
-              >
-                <ShieldCheck className="w-3.5 h-3.5" />
-                <span>Pairing PIN</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Real-time Auto-Discovery Banner if no remote device yet */}
-          {activeDevices.length === 0 && (
-            <div className="p-4 rounded-2xl bg-[#0d1118] border border-cyan-500/20 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs shadow-lg">
-              <div className="flex items-center gap-3">
-                <span className="relative flex h-3 w-3">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-3 w-3 bg-cyan-500"></span>
-                </span>
-                <div>
-                  <span className="text-white font-medium">Real-Time Discovery Active: </span>
-                  <span className="text-slate-400 font-mono">
-                    Open <strong className="text-cyan-300">http://10.169.219.4:5174</strong> on your phone or plug in USB cable to auto-connect.
-                  </span>
-                </div>
-              </div>
-              <button
-                onClick={() => {
-                  navigator.clipboard.writeText('http://10.169.219.4:5174')
-                  showToast('Phone URL copied to clipboard!')
-                }}
-                className="px-3 py-1.5 rounded-xl bg-cyan-950/60 text-cyan-300 border border-cyan-500/30 hover:bg-cyan-900/60 transition-all font-mono text-[11px] shrink-0"
-              >
-                Copy Phone URL
-              </button>
-            </div>
-          )}
-
-          {/* Tab 1: Primary Cast Arena */}
-          {activeTab === 'cast' && (
-            <div className="flex flex-col gap-6">
-            {/* Upper Arena: Video Player + Telemetry Sidebar */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-              {/* Left 8 Cols: Video Player & Floating Controls */}
-              <div className="lg:col-span-8 flex flex-col gap-4">
-                <VideoPlayerCanvas
-                  currentFrame={lastFrame}
-                  mediaStream={localStream}
-                  isActive={isCasting || isLocalSharing}
-                  transport={currentDevice?.transport === 'usb' ? 'USB Tethering (Offline)' : 'Bluetooth RFCOMM (Offline)'}
-                  targetDeviceName={currentDevice?.name}
-                />
-
-                {/* Floating Docked Controls Bar */}
-                <ControlsBar
-                  isActive={isCasting || isLocalSharing}
-                  isPaused={isPaused}
-                  isLocalSharing={isLocalSharing}
-                  selectedResolution={selectedResolution}
-                  selectedFps={selectedFps}
-                  onStartCast={handleStartCast}
-                  onStopCast={handleStopCast}
-                  onTogglePause={() => setIsPaused(!isPaused)}
-                  onStartLocalShare={startLocalShare}
-                  onStopLocalShare={stopLocalShare}
-                  onChangeResolution={setSelectedResolution}
-                  onChangeFps={setSelectedFps}
-                  onTakeSnapshot={handleTakeSnapshot}
-                />
-              </div>
-
-              {/* Right 4 Cols: Audio Spectrum & Live Telemetry Panel */}
-              <div className="lg:col-span-4 flex flex-col gap-4">
-                {/* Audio Visualizer */}
-                <AudioVisualizer
-                  currentChunk={lastAudioChunk}
-                  mediaStream={localStream}
-                  isActive={isCasting || isLocalSharing}
-                  isMuted={isMuted}
-                  onToggleMute={() => setIsMuted(!isMuted)}
-                />
-
-                {/* Live Telemetry Panel */}
-                <TelemetryPanel
-                  stats={telemetry}
-                  isActive={isCasting || isLocalSharing}
-                  transport={currentDevice?.transport === 'usb' ? 'USB 3.0 Direct' : 'Bluetooth Direct'}
-                />
-
-                {/* Quick Offline Status Card */}
-                <div className="bg-[#070a0f] border border-white/10 rounded-xl p-4 flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
-                      <Cable className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <div className="text-xs font-medium text-white">100% Offline Capable</div>
-                      <div className="text-[10px] text-slate-400 font-mono">No router, no internet required</div>
-                    </div>
-                  </div>
-                  <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-emerald-950/60 text-emerald-400 border border-emerald-500/30">
-                    AIR-GAPPED
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Tab 2: Discovery Radar & USB Panel */}
-        {activeTab === 'devices' && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            <div className="lg:col-span-7">
-              <BluetoothRadar
-                devices={activeDevices}
-                onSelectDevice={handleDeviceSelect}
-              />
-            </div>
-            <div className="lg:col-span-5">
-              <UsbDevicePanel
-                devices={activeDevices}
-                onSelectDevice={handleDeviceSelect}
-              />
-            </div>
-          </div>
-        )}
-
-        {/* Tab 3: Interactive Connection Wizard */}
-        {activeTab === 'wizard' && (
-          <div className="max-w-3xl mx-auto w-full">
-            <ConnectionWizard
-              devices={activeDevices}
-              onScan={(transport: string) => {
-                sendBridgeMessage({ type: 'scan', transport })
-                showToast(`Scanning for ${transport.toUpperCase()} devices...`)
-              }}
-              onConnect={(device: DiscoveredDevice, direction: CastDirection, transport: TransportMode) => {
-                setSelectedDevice(device)
-                sendBridgeMessage({
-                  type: 'connect',
-                  device_id: device.id,
-                  direction,
-                  transport,
-                })
-                showToast(`Connecting to ${device.name}...`)
-                setShowPairingModal(true)
-              }}
-              onStartBroadcast={(resolution: string, fps: number, systemAudio: boolean, mic: boolean) => {
-                setSelectedResolution(resolution)
-                setSelectedFps(fps)
-                setIsMuted(!systemAudio)
-                setIsCasting(true)
-                sendBridgeMessage({
-                  type: 'start_broadcast',
-                  resolution,
-                  fps,
-                  system_audio: systemAudio,
-                  microphone: mic,
-                })
-                setActiveTab('cast')
-                showToast('Broadcast initiated!')
-              }}
-            />
-          </div>
-        )}
-      </main>
-
-      {/* PIN & QR Authentication Modal */}
+      {/* Bidirectional PIN & QR Authentication Modal */}
       <PairingModal
-        isOpen={showPairingModal}
-        pairingPin={bridgePin}
-        deviceName={currentDevice?.name || 'Device'}
-        onClose={() => setShowPairingModal(false)}
+        isOpen={pairingModalOpen}
+        initialMode={pairingModalMode}
+        pairingPin={bridgePin || localDevice.pin}
+        deviceName={currentDevice?.name || 'Remote Peer'}
+        onClose={() => setPairingModalOpen(false)}
         onVerifyPin={handleVerifyPin}
       />
 
@@ -357,13 +292,13 @@ export function App() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 20 }}
-            className="fixed bottom-6 right-6 z-50 px-4 py-2.5 rounded-xl bg-slate-900/90 border border-indigo-500/40 text-xs font-mono text-indigo-200 shadow-2xl backdrop-blur-xl flex items-center gap-2"
+            className="fixed bottom-6 right-6 z-[100] px-4 py-2.5 rounded-2xl bg-slate-900/95 border border-indigo-500/50 text-xs font-mono text-indigo-200 shadow-2xl backdrop-blur-xl flex items-center gap-2"
           >
-            <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+            <Sparkles className="w-4 h-4 text-cyan-400" />
             <span>{notification}</span>
           </motion.div>
         )}
       </AnimatePresence>
-    </div>
+    </>
   )
 }

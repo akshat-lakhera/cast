@@ -403,6 +403,26 @@ pub enum ClientMessage {
         jpeg_quality: Option<u8>,
     },
 
+    /// Upload a video frame from mobile client or remote peer to bridge for broadcast
+    #[serde(rename = "upload_frame")]
+    UploadFrame {
+        frame_id: u32,
+        width: u32,
+        height: u32,
+        is_keyframe: bool,
+        timestamp_us: u64,
+        data_base64: String,
+    },
+
+    /// Upload audio chunk from mobile client or remote peer to bridge for broadcast
+    #[serde(rename = "upload_audio")]
+    UploadAudio {
+        timestamp_us: u64,
+        sample_rate: u32,
+        channels: u16,
+        samples_base64: String,
+    },
+
     /// Disconnect from the current session
     #[serde(rename = "disconnect")]
     Disconnect,
